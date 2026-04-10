@@ -11,7 +11,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
-from flask_mail import Mail
+from flask_mail import Mail, Message
 from flask_pymongo import PyMongo
 from pymongo.errors import ConfigurationError, PyMongoError
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -70,6 +70,7 @@ mail = Mail(app)
 
 app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 5MB limit for receipts
 LOCAL_USERS_FILE = os.path.join(app.root_path, "local_users.json")
+LOCAL_EXPENSES_FILE = os.path.join(app.root_path, "local_daily_expenses.json")
 MONGO_AVAILABLE = None
 MONGO_LAST_CHECK = None
 MONGO_LAST_ERROR = ""
@@ -91,11 +92,66 @@ def send_async_email(app, msg):
             print(f"Background Mail Error: {e}")
 
 
+def send_cycle_reset_email(user_name, user_email=None):
+    """Send notification when 30-day cycle resets."""
+    if not user_email:
+        return
+    msg = Message(
+        "YourTreasurer: Monthly Budget Cycle Reset",
+        sender=app.config["MAIL_USERNAME"],
+        recipients=[user_email],
+    )
+    msg.body = f"Hi {user_name},\n\nYour 30-day budget cycle has reset. Your current spend has been reset to 0, and you can set a new monthly limit.\n\nBest,\nYourTreasurer Team"
+    send_async_email(app, msg)
+
+
+def send_payment_reminder_email(user_email, user_name, payment_name, amount, due_date, days_until):
+    """Send email reminder for upcoming payment"""
+    try:
+        msg = Message(
+            f"🔔 Payment Reminder: {payment_name} is due soon",
+            sender=app.config["MAIL_USERNAME"],
+            recipients=[user_email],
+        )
+        msg.body = f"""
+Hello {user_name},
+
+This is a reminder that your payment for "{payment_name}" of ₹{amount:,.2f} is due on {due_date}.
+
+Days until due: {days_until}
+
+Please ensure you have sufficient funds.
+
+Best regards,
+YourTreasurer System
+"""
+        send_async_email(app, msg)
+        return True
+    except Exception as e:
+        print(f"Reminder email error: {e}")
+        return False
+
+
 def users_collection():
     if mongo is None:
         raise ConfigurationError(MONGO_INIT_ERROR or "MongoDB client is not initialized.")
     db_name = app.config["MONGO_DBNAME"]
     return mongo.cx[db_name]["users"]
+
+
+def daily_expenses_collection():
+    if mongo is None:
+        raise ConfigurationError(MONGO_INIT_ERROR or "MongoDB client is not initialized.")
+    db_name = app.config["MONGO_DBNAME"]
+    return mongo.cx[db_name]["daily_expenses"]
+
+
+def recurring_payments_collection():
+    """Get or create recurring_payments collection (auto-created on first insert)"""
+    if mongo is None:
+        raise ConfigurationError(MONGO_INIT_ERROR or "MongoDB client is not initialized.")
+    db_name = app.config["MONGO_DBNAME"]
+    return mongo.cx[db_name]["recurring_payments"]
 
 
 def is_password_valid(password):
@@ -178,6 +234,58 @@ def upsert_local_user(updated_user):
     save_local_users(users)
 
 
+def load_local_expenses():
+    if not os.path.exists(LOCAL_EXPENSES_FILE):
+        return []
+    try:
+        with open(LOCAL_EXPENSES_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+            return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_local_expenses(expenses):
+    with open(LOCAL_EXPENSES_FILE, "w", encoding="utf-8") as file:
+        json.dump(expenses, file, indent=2)
+
+
+def append_local_expense(expense_doc):
+    expenses = load_local_expenses()
+    expenses.append(expense_doc)
+    save_local_expenses(expenses)
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def increment_current_spend(amount):
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+
+    if user_id.startswith("local:"):
+        local_user_id = user_id.replace("local:", "", 1)
+        user_doc = get_local_user_by_id(local_user_id)
+        if not user_doc:
+            return
+        current = float(user_doc.get("current_spend", 0) or 0)
+        user_doc["current_spend"] = current + amount
+        upsert_local_user(user_doc)
+        return
+
+    if is_mongo_available():
+        try:
+            users_collection().update_one({"_id": ObjectId(user_id)}, {"$inc": {"current_spend": amount}})
+        except (InvalidId, PyMongoError):
+            return
+
+
 def parse_start_date(raw_start_date):
     if isinstance(raw_start_date, datetime):
         return raw_start_date
@@ -201,12 +309,25 @@ def maybe_reset_cycle(user_doc):
         return user_doc
 
     if now > start_date + timedelta(days=30):
+        # Archive expenses before resetting
+        try:
+            expenses = list(daily_expenses_collection().find({"created_by": user_doc["name"], "created_at": {"$gte": start_date}}))
+            if expenses:
+                archived_collection = mongo.cx[app.config["MONGO_DBNAME"]]["archived_expenses"]
+                for exp in expenses:
+                    exp["archived_at"] = now
+                    archived_collection.insert_one(exp)
+                daily_expenses_collection().delete_many({"created_by": user_doc["name"], "created_at": {"$gte": start_date}})
+        except PyMongoError:
+            pass
+
         users_collection().update_one(
             {"_id": user_doc["_id"]},
-            {"$set": {"current_spend": 0, "start_date": now}},
+            {"$set": {"current_spend": 0, "start_date": now, "monthly_limit": 0}},
         )
         user_doc["current_spend"] = 0
         user_doc["start_date"] = now
+        user_doc["monthly_limit"] = 0
     return user_doc
 
 
@@ -233,6 +354,45 @@ def build_user_payload(user_doc):
         "current_spend": float(user_doc.get("current_spend", 0) or 0),
     }
 
+
+def check_upcoming_payments_background(user_id, user_email, user_name):
+    """Background check for upcoming payments (called on login/dashboard)"""
+    try:
+        if not is_mongo_available():
+            return
+        
+        today = datetime.utcnow().date()
+        payments = list(recurring_payments_collection().find({
+            'user_id': ObjectId(user_id),
+            'is_active': True
+        }))
+        
+        for payment in payments:
+            due_date = payment['due_date']
+            if isinstance(due_date, str):
+                due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
+            else:
+                due_date = due_date.date()
+            
+            remind_days = payment.get('remind_days_before', 3)
+            reminder_date = due_date - timedelta(days=remind_days)
+            last_reminder = payment.get('last_reminder_sent')
+            
+            if reminder_date <= today and not last_reminder:
+                days_until = (due_date - today).days
+                if days_until >= -2:
+                    send_payment_reminder_email(
+                        user_email, user_name, 
+                        payment['name'], payment['amount'],
+                        due_date.strftime('%B %d, %Y'), days_until
+                    )
+                    recurring_payments_collection().update_one(
+                        {'_id': payment['_id']},
+                        {'$set': {'last_reminder_sent': datetime.utcnow()}}
+                    )
+    except Exception as e:
+        print(f"Error checking upcoming payments: {e}")
+
 # --- GLOBAL CHECKS ---
 
 @app.before_request
@@ -243,7 +403,6 @@ def check_budget_setup():
 
 @app.route('/')
 def home():
-    # TODO: Fetch today's expenses to show a quick summary on the home dashboard
     return render_template('index.html')
 
 @app.route('/my_profile')
@@ -290,6 +449,7 @@ def login():
     if not check_password_hash(user_doc.get("password", ""), password):
         return jsonify({"success": False, "message": "Invalid credentials."}), 401
 
+    user_email = user_doc.get("email")
     if use_local_store:
         user_doc = maybe_reset_cycle_local(user_doc)
         session["user_id"] = f"local:{user_doc['_id']}"
@@ -300,6 +460,10 @@ def login():
             return jsonify({"success": False, "message": "Database unavailable. Please try again shortly."}), 503
         session["user_id"] = str(user_doc["_id"])
     session["user_name"] = user_doc["name"]
+    
+    # Check for upcoming recurring payments
+    if not use_local_store and user_email:
+        check_upcoming_payments_background(session["user_id"], user_email, user_doc["name"])
 
     return jsonify(
         {
@@ -318,6 +482,7 @@ def signup():
     name = (payload.get("name") or "").strip()
     password = payload.get("password") or ""
     monthly_limit_input = payload.get("monthly_limit")
+    email = (payload.get("email") or "").strip()
 
     if not name or not password:
         return jsonify({"success": False, "message": "Name and password are required."}), 400
@@ -355,6 +520,7 @@ def signup():
             "monthly_limit": monthly_limit,
             "current_spend": 0.0,
             "start_date": now,
+            "email": email if email else None,
         }
         if use_local_store:
             local_user = {
@@ -364,6 +530,7 @@ def signup():
                 "monthly_limit": monthly_limit,
                 "current_spend": 0.0,
                 "start_date": now.isoformat(),
+                "email": email if email else None,
             }
             upsert_local_user(local_user)
             session["user_id"] = f"local:{local_user['_id']}"
@@ -396,7 +563,6 @@ def logout():
 
 @app.route('/my_expenses')
 def my_expenses():
-    # TODO: Fetch all expenses from MongoDB, sort by date, and pass to template
     return render_template('expenses.html')
 
 @app.route('/analysis')
@@ -405,29 +571,318 @@ def analysis():
 
 @app.route('/interval_spend')
 def interval_spend():
-    # TODO: Fetch EMI and Subscription data to display upcoming dues
     return render_template('interval_spend.html')
 
 @app.route('/about_us')
 def about_us():
     return render_template('about_us.html')
 
+
+# ==================== INTERVAL SPEND MANAGER API ROUTES ====================
+
+@app.route('/api/add_recurring_payment', methods=['POST'])
+def add_recurring_payment():
+    """Add a recurring payment (EMI/Rent/Subscription) with reminder settings"""
+    try:
+        if not session.get("user_id"):
+            return jsonify({"success": False, "message": "Not logged in."}), 401
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['name', 'amount', 'due_date', 'remind_days_before']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'success': False, 'error': f'Missing field: {field}'}), 400
+        
+        # Auto-create recurring_payments collection on first insert
+        payment_id = recurring_payments_collection().insert_one({
+            'user_id': ObjectId(session['user_id']),
+            'name': data['name'],
+            'description': data.get('description', ''),
+            'amount': float(data['amount']),
+            'payment_type': data.get('payment_type', 'emi'),
+            'due_date': datetime.strptime(data['due_date'], '%Y-%m-%d'),
+            'remind_days_before': int(data['remind_days_before']),
+            'is_active': True,
+            'created_at': datetime.utcnow(),
+            'last_reminder_sent': None,
+            'payment_history': []
+        }).inserted_id
+        
+        return jsonify({
+            'success': True,
+            'payment_id': str(payment_id),
+            'message': f'Recurring payment "{data["name"]}" added successfully'
+        })
+    except Exception as e:
+        print(f"Error adding recurring payment: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/get_recurring_payments', methods=['GET'])
+def get_recurring_payments():
+    """Get all recurring payments for the current user"""
+    try:
+        if not session.get("user_id"):
+            return jsonify({"success": False, "message": "Not logged in."}), 401
+        
+        if not is_mongo_available():
+            return jsonify({'success': False, 'error': 'Database unavailable'}), 503
+        
+        payments = list(recurring_payments_collection().find({
+            'user_id': ObjectId(session['user_id']),
+            'is_active': True
+        }).sort('due_date', 1))
+        
+        # Convert ObjectId and dates for JSON
+        for payment in payments:
+            payment['_id'] = str(payment['_id'])
+            payment['user_id'] = str(payment['user_id'])
+            payment['due_date'] = payment['due_date'].strftime('%Y-%m-%d')
+            payment['created_at'] = payment['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+            if payment.get('last_reminder_sent'):
+                payment['last_reminder_sent'] = payment['last_reminder_sent'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        return jsonify(payments)
+    except Exception as e:
+        print(f"Error getting recurring payments: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/update_recurring_payment/<payment_id>', methods=['PUT'])
+def update_recurring_payment(payment_id):
+    """Update an existing recurring payment"""
+    try:
+        if not session.get("user_id"):
+            return jsonify({"success": False, "message": "Not logged in."}), 401
+        
+        data = request.json
+        
+        update_data = {}
+        if 'name' in data:
+            update_data['name'] = data['name']
+        if 'description' in data:
+            update_data['description'] = data['description']
+        if 'amount' in data:
+            update_data['amount'] = float(data['amount'])
+        if 'due_date' in data:
+            update_data['due_date'] = datetime.strptime(data['due_date'], '%Y-%m-%d')
+        if 'remind_days_before' in data:
+            update_data['remind_days_before'] = int(data['remind_days_before'])
+        if 'payment_type' in data:
+            update_data['payment_type'] = data['payment_type']
+        
+        result = recurring_payments_collection().update_one(
+            {'_id': ObjectId(payment_id), 'user_id': ObjectId(session['user_id'])},
+            {'$set': update_data}
+        )
+        
+        if result.modified_count > 0:
+            return jsonify({'success': True, 'message': 'Payment updated successfully'})
+        return jsonify({'success': False, 'error': 'Payment not found'}), 404
+    except Exception as e:
+        print(f"Error updating recurring payment: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/delete_recurring_payment/<payment_id>', methods=['DELETE'])
+def delete_recurring_payment(payment_id):
+    """Soft delete a recurring payment (mark as inactive)"""
+    try:
+        if not session.get("user_id"):
+            return jsonify({"success": False, "message": "Not logged in."}), 401
+        
+        result = recurring_payments_collection().update_one(
+            {'_id': ObjectId(payment_id), 'user_id': ObjectId(session['user_id'])},
+            {'$set': {'is_active': False}}
+        )
+        
+        if result.modified_count > 0:
+            return jsonify({'success': True, 'message': 'Payment deleted successfully'})
+        return jsonify({'success': False, 'error': 'Payment not found'}), 404
+    except Exception as e:
+        print(f"Error deleting recurring payment: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/mark_payment_paid/<payment_id>', methods=['POST'])
+def mark_payment_paid(payment_id):
+    """Mark a recurring payment as paid for the current month"""
+    try:
+        if not session.get("user_id"):
+            return jsonify({"success": False, "message": "Not logged in."}), 401
+        
+        data = request.json or {}
+        
+        payment = recurring_payments_collection().find_one({
+            '_id': ObjectId(payment_id),
+            'user_id': ObjectId(session['user_id'])
+        })
+        
+        if not payment:
+            return jsonify({'success': False, 'error': 'Payment not found'}), 404
+        
+        # Add to payment history
+        payment_record = {
+            'paid_date': datetime.utcnow(),
+            'amount': payment['amount'],
+            'notes': data.get('notes', ''),
+            'month': datetime.utcnow().strftime('%Y-%m')
+        }
+        
+        recurring_payments_collection().update_one(
+            {'_id': ObjectId(payment_id)},
+            {'$push': {'payment_history': payment_record}}
+        )
+        
+        # Also create an expense record
+        expense_id = daily_expenses_collection().insert_one({
+            'user_id': ObjectId(session['user_id']),
+            'created_by': session.get('user_name', 'user'),
+            'category': f"{payment['payment_type'].capitalize()} - {payment['name']}",
+            'amount': payment['amount'],
+            'description': f"{payment['name']} - Monthly Payment",
+            'is_loan': False,
+            'date': datetime.utcnow(),
+            'created_at': datetime.utcnow(),
+            'receipt_url': None,
+            'is_recurring': True,
+            'recurring_id': ObjectId(payment_id)
+        }).inserted_id
+        
+        # Update total spent
+        increment_current_spend(payment['amount'])
+        
+        return jsonify({
+            'success': True,
+            'message': f'Payment for {payment["name"]} marked as paid',
+            'expense_id': str(expense_id)
+        })
+    except Exception as e:
+        print(f"Error marking payment paid: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/check_upcoming_payments', methods=['GET'])
+def check_upcoming_payments():
+    """Check for upcoming payments that need reminders"""
+    try:
+        if not session.get("user_id"):
+            return jsonify({"success": False, "message": "Not logged in."}), 401
+        
+        if not is_mongo_available():
+            return jsonify({'upcoming': []})
+        
+        today = datetime.utcnow().date()
+        
+        payments = list(recurring_payments_collection().find({
+            'user_id': ObjectId(session['user_id']),
+            'is_active': True
+        }))
+        
+        upcoming = []
+        for payment in payments:
+            due_date = payment['due_date']
+            if isinstance(due_date, str):
+                due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
+            else:
+                due_date = due_date.date()
+            
+            remind_days = payment.get('remind_days_before', 3)
+            reminder_date = due_date - timedelta(days=remind_days)
+            days_until_due = (due_date - today).days
+            
+            # Check if payment is upcoming for display
+            if reminder_date <= today and days_until_due >= -2:
+                upcoming.append({
+                    '_id': str(payment['_id']),
+                    'name': payment['name'],
+                    'amount': payment['amount'],
+                    'due_date': due_date.strftime('%Y-%m-%d'),
+                    'days_until_due': days_until_due
+                })
+        
+        return jsonify({'upcoming': upcoming})
+    except Exception as e:
+        print(f"Error checking upcoming payments: {e}")
+        return jsonify({'upcoming': []})
+
+# ==================== END INTERVAL SPEND MANAGER ====================
+
+
 # --- DATA SUBMISSION ROUTES (THE LOGIC) ---
 
 @app.route('/add_expense', methods=['POST'])
 def add_expense():
-    """Handles adding a new daily expense."""
+    """Handles adding a new daily expense / loan entry."""
     try:
-        form_data = request.form.to_dict()
-        
-        # 1. TODO: Handle Cloudinary receipt upload if 'receipt_image' exists in request.files
-        # 2. TODO: Insert form_data into MongoDB 'expenses' collection
-        # 3. TODO: Calculate if total month spend > 90% of threshold. If yes, trigger send_async_email()
+        payload = request.get_json(silent=True) or request.form.to_dict()
 
-        return redirect(url_for('my_expenses'))
+        category = (payload.get("category") or "").strip()
+        amount_raw = payload.get("amount")
+        is_loan = parse_bool(payload.get("is_loan"))
+        friend_email = (payload.get("friend_email") or "").strip()
+        relationship = (payload.get("relationship") or "").strip()
+
+        if not category:
+            return jsonify({"success": False, "message": "Category is required."}), 400
+
+        try:
+            amount = float(amount_raw)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "message": "Amount must be a valid number."}), 400
+        if amount <= 0:
+            return jsonify({"success": False, "message": "Amount must be greater than 0."}), 400
+
+        if is_loan and (not friend_email or not relationship):
+            return jsonify(
+                {
+                    "success": False,
+                    "message": "Friend email and relationship are required when 'Is it a Loan?' is selected.",
+                }
+            ), 400
+
+        now = datetime.utcnow()
+        expense_doc = {
+            "category": category,
+            "amount": amount,
+            "is_loan": is_loan,
+            "friend_email": friend_email if is_loan else None,
+            "relationship": relationship if is_loan else None,
+            "created_at": now,
+            "created_by": session.get("user_name", "guest"),
+        }
+
+        storage = "local"
+        if is_mongo_available():
+            try:
+                insert_result = daily_expenses_collection().insert_one(expense_doc)
+                expense_doc["_id"] = str(insert_result.inserted_id)
+                storage = "atlas"
+            except PyMongoError:
+                local_doc = expense_doc.copy()
+                local_doc["_id"] = str(uuid4())
+                local_doc["created_at"] = now.isoformat()
+                append_local_expense(local_doc)
+        else:
+            local_doc = expense_doc.copy()
+            local_doc["_id"] = str(uuid4())
+            local_doc["created_at"] = now.isoformat()
+            append_local_expense(local_doc)
+
+        increment_current_spend(amount)
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "Expense saved successfully.",
+                "storage": storage,
+            }
+        )
     except Exception as e:
         print(f"Expense Submit Error: {e}")
-        return f"Submission failed: {e}", 500
+        return jsonify({"success": False, "message": "Failed to submit expense."}), 500
 
 @app.route('/add_friend_loan', methods=['POST'])
 def add_friend_loan():
@@ -456,9 +911,6 @@ def add_interval_spend():
 @app.route('/api/spend_data')
 def spend_data():
     """API endpoint to feed the Doughnut and Line charts in the Analysis tab."""
-    # TODO Task 4: Query MongoDB, group expenses by Category (Hostel, Junk Food, etc.)
-    # Return as JSON so JavaScript can draw the charts without reloading the page
-    
     dummy_data = {
         "categories": ["Educational", "Lifestyle", "Healthy Food", "Junk Food", "Hostel Rent", "Travelling"],
         "amounts": [1200, 500, 800, 300, 5000, 450]
@@ -519,3 +971,4 @@ def request_entity_too_large(error):
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
+    

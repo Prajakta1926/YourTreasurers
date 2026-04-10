@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interval Spend Manager | EMIs & Rent Tracker</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            position: relative;
+        }
+
+        /* Shimmering Background Effect */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(125deg, 
+                rgba(255,255,255,0.1) 0%, 
+                rgba(255,255,255,0.05) 30%,
+                rgba(255,255,255,0.15) 50%,
+                rgba(255,255,255,0.05) 70%,
+                rgba(255,255,255,0.1) 100%);
+            background-size: 200% 200%;
+            animation: shimmer 8s ease infinite;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        @keyframes shimmer {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Header */
+        .header {
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            padding: 25px 30px;
+            margin-bottom: 25px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #718096;
+        }
+
+        /* Stats Bar */
+        .stats-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .stat-card {
+            background: rgba(255,255,255,0.95);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            border-radius: 20px;
+            text-align: center;
+            transition: transform 0.3s;
+            cursor: pointer;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .stat-icon {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            color: #718096;
+            font-size: 0.85rem;
+            margin-top: 5px;
+        }
+
+        /* Main Grid */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 25px;
+            margin-bottom: 25px;
+        }
+
+        @media (max-width: 900px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Cards */
+        .card {
+            background: rgba(255,255,255,0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 25px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+
+        .card h2 {
+            color: #2d3748;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Form Styles */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            font-size: 1rem;
+            transition: all 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102,126,234,0.1);
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .btn-submit {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 100%;
+        }
+
+        .btn-submit:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102,126,234,0.3);
+        }
+
+        .btn-danger {
+            background: #ef4444;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-success {
+            background: #10b981;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        /* Payment List */
+        .payment-list {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .payment-item {
+            background: #f7fafc;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            transition: all 0.3s;
+            border-left: 4px solid #667eea;
+        }
+
+        .payment-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .payment-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .payment-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .payment-amount {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .payment-details {
+            font-size: 0.85rem;
+            color: #718096;
+            margin-bottom: 10px;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .payment-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .badge-emi {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        .badge-rent {
+            background: #d1fae5;
+            color: #059669;
+        }
+
+        .badge-subscription {
+            background: #e0e7ff;
+            color: #4338ca;
+        }
+
+        .reminder-badge {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .payment-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.75rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-sm:hover {
+            transform: translateY(-1px);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #a0aec0;
+        }
+
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        /* Alert */
+        .alert {
+            padding: 12px 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .alert-warning {
+            background: #fef3c7;
+            color: #92400e;
+            border-left: 4px solid #f59e0b;
+        }
+
+        .alert-info {
+            background: #e0e7ff;
+            color: #3730a3;
+            border-left: 4px solid #6366f1;
+        }
+
+        /* Navigation */
+        .nav-links {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+
+        .nav-link {
+            background: rgba(255,255,255,0.9);
+            padding: 10px 20px;
+            border-radius: 10px;
+            text-decoration: none;
+            color: #4a5568;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .nav-link:hover {
+            background: white;
+            transform: translateY(-2px);
+        }
+
+        .nav-link.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔄 Interval Spend Manager</h1>
+            <p>Track EMIs, Rent, Subscriptions, and other recurring payments with smart reminders</p>
+        </div>
+
+        <div class="nav-links">
+            <a href="/dashboard" class="nav-link">📊 Dashboard</a>
+            <a href="/expenses" class="nav-link">💰 Expenses</a>
+            <a href="/loans" class="nav-link">👥 Friend Loans</a>
+            <a href="/analysis" class="nav-link">📈 Analysis</a>
+            <a href="/interval_spend" class="nav-link active">🔄 Recurring Payments</a>
+        </div>
+
+        <div class="stats-bar" id="statsBar">
+            <div class="stat-card">
+                <div class="stat-icon">📅</div>
+                <div class="stat-value" id="totalPayments">0</div>
+                <div class="stat-label">Active Payments</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">💰</div>
+                <div class="stat-value" id="totalMonthly">0</div>
+                <div class="stat-label">Monthly Total (₹)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">⏰</div>
+                <div class="stat-value" id="upcomingCount">0</div>
+                <div class="stat-label">Upcoming</div>
+            </div>
+        </div>
+
+        <div class="main-grid">
+            <div class="card">
+                <h2>➕ Add Recurring Payment</h2>
+                <form id="recurringForm">
+                    <div class="form-group">
+                        <label>Payment Name *</label>
+                        <input type="text" id="paymentName" placeholder="e.g., Home Loan EMI, Monthly Rent" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Description (Optional)</label>
+                        <textarea id="paymentDesc" rows="2" placeholder="Additional details..."></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Amount (₹) *</label>
+                            <input type="number" id="paymentAmount" step="0.01" placeholder="0.00" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Payment Type *</label>
+                            <select id="paymentType" required>
+                                <option value="emi">🏦 EMI / Loan</option>
+                                <option value="rent">🏠 Rent</option>
+                                <option value="subscription">📺 Subscription</option>
+                                <option value="insurance">🛡️ Insurance</option>
+                                <option value="other">📋 Other</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Due Date *</label>
+                            <input type="date" id="dueDate" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Remind Me (X days before) *</label>
+                            <select id="remindDays" required>
+                                <option value="0">Same day</option>
+                                <option value="1">1 day before</option>
+                                <option value="2">2 days before</option>
+                                <option value="3">3 days before</option>
+                                <option value="5">5 days before</option>
+                                <option value="7">1 week before</option>
+                                <option value="14">2 weeks before</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-submit">➕ Add Recurring Payment</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h2>📋 Active Recurring Payments</h2>
+                <div id="alertContainer"></div>
+                <div class="payment-list" id="paymentList">
+                    <div class="empty-state">Loading payments...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Audio elements for sound effects
+        const coinSound = new Audio('data:audio/wav;base64,U3RlYWx0aCBzb3VuZCBlZmZlY3RzIGFyZSBwbGF5ZWQgdmlhIEpT');
+        const whooshSound = new Audio('data:audio/wav;base64,U291bmQgZWZmZWN0');
+        
+        // Helper function to play sound
+        function playSound(type) {
+            try {
+                if (type === 'coin') {
+                    // Create beep sound for coin
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const oscillator = audioCtx.createOscillator();
+                    const gainNode = audioCtx.createGain();
+                    oscillator.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    oscillator.frequency.value = 880;
+                    gainNode.gain.value = 0.3;
+                    oscillator.start();
+                    gainNode.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.5);
+                    oscillator.stop(audioCtx.currentTime + 0.5);
+                } else if (type === 'whoosh') {
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const oscillator = audioCtx.createOscillator();
+                    const gainNode = audioCtx.createGain();
+                    oscillator.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    oscillator.frequency.value = 440;
+                    oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.3);
+                    gainNode.gain.value = 0.2;
+                    oscillator.start();
+                    gainNode.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.3);
+                    oscillator.stop(audioCtx.currentTime + 0.3);
+                }
+            } catch(e) {
+                console.log('Audio not supported');
+            }
+        }
+
+        // Load payments
+        async function loadPayments() {
+            try {
+                const response = await fetch('/api/get_recurring_payments');
+                const payments = await response.json();
+                
+                const paymentList = document.getElementById('paymentList');
+                const totalPayments = payments.length;
+                const totalMonthly = payments.reduce((sum, p) => sum + p.amount, 0);
+                
+                document.getElementById('totalPayments').innerText = totalPayments;
+                document.getElementById('totalMonthly').innerText = '₹' + totalMonthly.toLocaleString();
+                
+                if (payments.length === 0) {
+                    paymentList.innerHTML = '<div class="empty-state">📭 No recurring payments added yet. Add your first EMI or rent above!</div>';
+                    return;
+                }
+                
+                paymentList.innerHTML = payments.map(payment => {
+                    const dueDate = new Date(payment.due_date);
+                    const today = new Date();
+                    const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+                    
+                    let badgeClass = '';
+                    if (payment.payment_type === 'emi') badgeClass = 'badge-emi';
+                    else if (payment.payment_type === 'rent') badgeClass = 'badge-rent';
+                    else if (payment.payment_type === 'subscription') badgeClass = 'badge-subscription';
+                    else badgeClass = 'badge-emi';
+                    
+                    let paymentTypeLabel = '';
+                    if (payment.payment_type === 'emi') paymentTypeLabel = '🏦 EMI';
+                    else if (payment.payment_type === 'rent') paymentTypeLabel = '🏠 Rent';
+                    else if (payment.payment_type === 'subscription') paymentTypeLabel = '📺 Subscription';
+                    else if (payment.payment_type === 'insurance') paymentTypeLabel = '🛡️ Insurance';
+                    else paymentTypeLabel = '📋 Other';
+                    
+                    let reminderText = '';
+                    if (daysUntilDue <= payment.remind_days_before && daysUntilDue > 0) {
+                        reminderText = `<span class="payment-badge reminder-badge">⏰ Due in ${daysUntilDue} days</span>`;
+                    } else if (daysUntilDue <= 0) {
+                        reminderText = `<span class="payment-badge reminder-badge">⚠️ Past due</span>`;
+                    }
+                    
+                    return `
+                        <div class="payment-item">
+                            <div class="payment-header">
+                                <div class="payment-name">${escapeHtml(payment.name)}</div>
+                                <div class="payment-amount">₹${payment.amount.toLocaleString()}</div>
+                            </div>
+                            <div class="payment-details">
+                                <span class="payment-badge ${badgeClass}">${paymentTypeLabel}</span>
+                                <span>📅 Due: ${formatDate(payment.due_date)}</span>
+                                <span>🔔 Remind: ${payment.remind_days_before} day(s) before</span>
+                                ${reminderText}
+                            </div>
+                            ${payment.description ? `<div class="payment-details">📝 ${escapeHtml(payment.description)}</div>` : ''}
+                            <div class="payment-actions">
+                                <button class="btn-sm btn-success" onclick="markAsPaid('${payment._id}', '${escapeHtml(payment.name)}', ${payment.amount})">
+                                    ✅ Mark as Paid
+                                </button>
+                                <button class="btn-sm" onclick="editPayment('${payment._id}')" style="background: #4299e1; color: white;">
+                                    ✏️ Edit
+                                </button>
+                                <button class="btn-sm btn-danger" onclick="deletePayment('${payment._id}')">
+                                    🗑️ Delete
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                // Check for upcoming payments
+                checkUpcomingPayments();
+                
+            } catch (error) {
+                console.error('Error loading payments:', error);
+                document.getElementById('paymentList').innerHTML = '<div class="empty-state">Error loading payments. Please refresh.</div>';
+            }
+        }
+        
+        async function checkUpcomingPayments() {
+            try {
+                const response = await fetch('/api/check_upcoming_payments');
+                const data = await response.json();
+                
+                if (data.upcoming && data.upcoming.length > 0) {
+                    const alertContainer = document.getElementById('alertContainer');
+                    alertContainer.innerHTML = data.upcoming.map(p => `
+                        <div class="alert alert-warning">
+                            🔔 <strong>Reminder:</strong> "${escapeHtml(p.name)}" of ₹${p.amount} is due in ${p.days_until_due} days (${formatDate(p.due_date)})
+                        </div>
+                    `).join('');
+                }
+            } catch(e) {
+                console.log('No upcoming reminders');
+            }
+        }
+        
+        // Add recurring payment
+        document.getElementById('recurringForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const paymentData = {
+                name: document.getElementById('paymentName').value,
+                description: document.getElementById('paymentDesc').value,
+                amount: parseFloat(document.getElementById('paymentAmount').value),
+                payment_type: document.getElementById('paymentType').value,
+                due_date: document.getElementById('dueDate').value,
+                remind_days_before: parseInt(document.getElementById('remindDays').value)
+            };
+            
+            try {
+                const response = await fetch('/api/add_recurring_payment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(paymentData)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    playSound('coin');
+                    document.getElementById('recurringForm').reset();
+                    loadPayments();
+                    showAlert('success', result.message);
+                } else {
+                    showAlert('error', result.error || 'Failed to add payment');
+                }
+            } catch (error) {
+                showAlert('error', 'Network error. Please try again.');
+            }
+        });
+        
+        // Mark as paid
+        async function markAsPaid(paymentId, name, amount) {
+            if (confirm(`Mark "${name}" (₹${amount}) as paid for this month?`)) {
+                try {
+                    const response = await fetch(`/api/mark_payment_paid/${paymentId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ notes: 'Paid via interval manager' })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        playSound('coin');
+                        showAlert('success', result.message);
+                        loadPayments();
+                    } else {
+                        showAlert('error', result.error);
+                    }
+                } catch (error) {
+                    showAlert('error', 'Network error');
+                }
+            }
+        }
+        
+        // Delete payment
+        async function deletePayment(paymentId) {
+            if (confirm('Are you sure you want to delete this recurring payment?')) {
+                try {
+                    const response = await fetch(`/api/delete_recurring_payment/${paymentId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        playSound('whoosh');
+                        showAlert('success', result.message);
+                        loadPayments();
+                    } else {
+                        showAlert('error', result.error);
+                    }
+                } catch (error) {
+                    showAlert('error', 'Network error');
+                }
+            }
+        }
+        
+        // Edit payment
+        async function editPayment(paymentId) {
+            // For simplicity, prompt for new values
+            const newAmount = prompt('Enter new amount:');
+            if (newAmount) {
+                try {
+                    const response = await fetch(`/api/update_recurring_payment/${paymentId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ amount: parseFloat(newAmount) })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        playSound('whoosh');
+                        showAlert('success', result.message);
+                        loadPayments();
+                    }
+                } catch (error) {
+                    showAlert('error', 'Update failed');
+                }
+            }
+        }
+        
+        function showAlert(type, message) {
+            const alertContainer = document.getElementById('alertContainer');
+            const alertClass = type === 'success' ? 'alert-info' : 'alert-warning';
+            alertContainer.innerHTML = `
+                <div class="alert ${alertClass}">
+                    ${type === 'success' ? '✅' : '⚠️'} ${escapeHtml(message)}
+                </div>
+            `;
+            setTimeout(() => {
+                if (alertContainer.firstChild) alertContainer.removeChild(alertContainer.firstChild);
+            }, 3000);
+        }
+        
+        function formatDate(dateString) {
+            const date = new Date(dateString);
+            return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+        }
+        
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/[&<>]/g, function(m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            });
+        }
+        
+        // Set default due date to next month
+        const today = new Date();
+        const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, today.getDate());
+        document.getElementById('dueDate').value = nextMonth.toISOString().split('T')[0];
+        
+        // Load payments on page load
+        loadPayments();
+        
+        // Auto-refresh every minute
+        setInterval(loadPayments, 60000);
+    </script>
+</body>
+</html>
