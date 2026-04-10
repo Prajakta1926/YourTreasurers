@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -52,6 +53,7 @@ PASSWORD_RULES_TEXT = (
     "Password must be at least 8 characters and include uppercase, lowercase, "
     "number, and special character."
 )
+NAME_RULES_TEXT = "Name must contain only letters and spaces."
 
 # --- ASYNC BACKGROUND TASKS ---
 
@@ -78,6 +80,10 @@ def is_password_valid(password):
     has_digit = any(char.isdigit() for char in password)
     has_special = any(not char.isalnum() for char in password)
     return has_upper and has_lower and has_digit and has_special
+
+
+def is_name_valid(name):
+    return bool(re.fullmatch(r"[A-Za-z ]+", name))
 
 
 def is_mongo_available():
@@ -240,6 +246,8 @@ def login():
         return jsonify({"success": False, "message": "Name and password are required."}), 400
     if len(name) < 3:
         return jsonify({"success": False, "message": "Name must be at least 3 characters."}), 400
+    if not is_name_valid(name):
+        return jsonify({"success": False, "message": NAME_RULES_TEXT}), 400
     if not is_password_valid(password):
         return jsonify({"success": False, "message": PASSWORD_RULES_TEXT}), 400
 
@@ -299,6 +307,8 @@ def signup():
         return jsonify({"success": False, "message": "Name and password are required."}), 400
     if len(name) < 3:
         return jsonify({"success": False, "message": "Name must be at least 3 characters."}), 400
+    if not is_name_valid(name):
+        return jsonify({"success": False, "message": NAME_RULES_TEXT}), 400
     if not is_password_valid(password):
         return jsonify({"success": False, "message": PASSWORD_RULES_TEXT}), 400
 

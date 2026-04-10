@@ -117,8 +117,11 @@
             <form id="login-form" class="form-grid">
                 <div>
                     <label for="name">Name</label>
-                    <input id="name" name="name" type="text" minlength="3" placeholder="Enter your name" required>
+                    <input id="name" name="name" type="text" minlength="3" pattern="[A-Za-z ]+" placeholder="Enter your name" required>
                 </div>
+                <small style="color: var(--blue-mid);">
+                    Name can contain only letters and spaces.
+                </small>
                 <div>
                     <label for="password">Password</label>
                     <input id="password" name="password" type="password" minlength="8" placeholder="Enter your password" required>
@@ -213,6 +216,12 @@
             if (trimmedName.length < 3) {
                 statusNode.classList.add('error');
                 statusNode.textContent = 'Name must be at least 3 characters.';
+                return;
+            }
+            const nameRule = /^[A-Za-z ]+$/;
+            if (!nameRule.test(trimmedName)) {
+                statusNode.classList.add('error');
+                statusNode.textContent = 'Name must contain only letters and spaces.';
                 return;
             }
 
